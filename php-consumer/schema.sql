@@ -1,0 +1,9 @@
+CREATE DATABASE IF NOT EXISTS shipping_db;
+USE shipping_db;
+
+CREATE TABLE IF NOT EXISTS shipments (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  order_id INT NOT NULL UNIQUE,
+  status ENUM('created') NOT NULL DEFAULT 'created',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
