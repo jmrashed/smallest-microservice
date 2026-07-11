@@ -1,0 +1,6 @@
+{
+    "name": "world-smallest-microservice/php-consumer",
+    "require": {
+        "php-amqplib/php-amqplib": "^2.0"
+    }
+}
