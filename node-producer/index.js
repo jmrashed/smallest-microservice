@@ -35,8 +35,8 @@ async function consumeTerminalEvents() {
   for (const [queue, status] of queues) {
     await channel.assertQueue(queue, { durable: false });
     channel.consume(queue, async (msg) => {
-      const message = JSON.parse(msg.content.toString());
       try {
+        const message = JSON.parse(msg.content.toString());
         await updateOrderStatus(message.order_id, status);
         channel.ack(msg);
       } catch (err) {
@@ -48,28 +48,38 @@ async function consumeTerminalEvents() {
 }
 
 async function createOrder(req, res) {
-  const { product_id, quantity, amount } = req.body;
-  if (!product_id || !quantity || !amount) {
-    return res.status(400).json({ error: 'product_id, quantity, and amount are required' });
+  try {
+    const { product_id, quantity, amount } = req.body;
+    if (!product_id || !quantity || !amount) {
+      return res.status(400).json({ error: 'product_id, quantity, and amount are required' });
+    }
+
+    const [result] = await pool.execute(
+      'INSERT INTO orders (product_id, quantity, amount, status) VALUES (?, ?, ?, ?)',
+      [product_id, quantity, amount, 'pending']
+    );
+    const orderId = result.insertId;
+
+    await publishEvent(Q_ORDER_CREATED, 'order_created', { order_id: orderId, product_id, quantity, amount });
+
+    res.status(201).json({ order_id: orderId, status: 'pending' });
+  } catch (err) {
+    console.error('[node] error in createOrder:', err);
+    res.status(500).json({ error: 'internal error' });
   }
-
-  const [result] = await pool.execute(
-    'INSERT INTO orders (product_id, quantity, amount, status) VALUES (?, ?, ?, ?)',
-    [product_id, quantity, amount, 'pending']
-  );
-  const orderId = result.insertId;
-
-  await publishEvent(Q_ORDER_CREATED, 'order_created', { order_id: orderId, product_id, quantity, amount });
-
-  res.status(201).json({ order_id: orderId, status: 'pending' });
 }
 
 async function getOrder(req, res) {
-  const [rows] = await pool.execute('SELECT * FROM orders WHERE id = ?', [req.params.id]);
-  if (rows.length === 0) {
-    return res.status(404).json({ error: 'order not found' });
+  try {
+    const [rows] = await pool.execute('SELECT * FROM orders WHERE id = ?', [req.params.id]);
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'order not found' });
+    }
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('[node] error in getOrder:', err);
+    res.status(500).json({ error: 'internal error' });
   }
-  res.json(rows[0]);
 }
 
 async function main() {
