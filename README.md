@@ -142,6 +142,25 @@ Poll status with:
 curl -s localhost:3000/orders/<order_id>
 ```
 
+List recent orders with:
+
+```bash
+curl -s localhost:3000/orders
+```
+
+## Web UI
+
+A small React + Tailwind UI in `web-ui/` gives you a form to place orders
+and a live-updating table instead of `curl`.
+
+```bash
+cd web-ui && npm install && npm run dev
+```
+
+Open `http://localhost:5173`. In dev, Vite proxies `/api/*` requests to
+`node-producer` on `:3000`, so make sure the Order Service (and the rest
+of the saga) is already running per the **Run** section above.
+
 ## License
 
 Released under the [MIT License](LICENSE).
