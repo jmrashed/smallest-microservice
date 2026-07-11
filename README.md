@@ -30,6 +30,50 @@ POST /orders (Node)                                                     saga end
                   Python refunds on stock_unavailable ─────────────┘
 ```
 
+## How RabbitMQ Works Here
+
+Services never call each other directly — no service knows another
+service's address. Each one only knows RabbitMQ's address, and talks to it
+via **publish/subscribe over named queues**:
+
+```
+                                   ┌───────────────────────────────┐
+                                   │           RabbitMQ            │
+                                   │                                │
+   Node  ──publish──▶ q.order_created ──────────────▶ consume ──▶  Python
+                                   │                                │
+ Python  ──publish──▶ q.payment_completed ───────────▶ consume ──▶  Go
+ Python  ──publish──▶ q.payment_failed ───────────────▶ consume ──▶  Node
+                                   │                                │
+     Go  ──publish──▶ q.stock_reserved ───────────────▶ consume ──▶  PHP
+     Go  ──publish──▶ q.stock_unavailable ────────────▶ consume ──▶  Python
+                                   │                                │
+    PHP  ──publish──▶ q.shipment_created ─────────────▶ consume ──▶  Node
+ Python  ──publish──▶ q.payment_refunded ─────────────▶ consume ──▶  Node
+                                   └───────────────────────────────┘
+```
+
+- **Publish** = "drop a message on this queue and move on" — the publisher
+  doesn't wait for a response (this is why `POST /orders` returns
+  `"pending"` immediately; the rest of the saga runs in the background).
+- **Consume** = a service opens a connection ahead of time and tells
+  RabbitMQ "send me anything that lands on queue X." RabbitMQ pushes each
+  message to that service's callback the moment one arrives.
+- The **queue name is the entire contract** between two services — e.g.
+  `q.order_created` is just a string both Node and Python's code happen to
+  agree on. There's no shared API, schema registry, or direct network call.
+- RabbitMQ guarantees **at-least-once delivery**: if a consumer crashes
+  before acking a message, RabbitMQ redelivers it later. That's why every
+  downstream table (`payments`, `reservations`, `shipments`) has an
+  `order_id UNIQUE` guard, and why each service checks affected-rows before
+  republishing its own next event — so a redelivered message can't
+  double-charge, double-reserve, double-ship, or cascade a duplicate event
+  through the rest of the chain.
+- Multiple consumers can listen on the same queue (RabbitMQ round-robins
+  between them) — this project runs exactly one instance of each service,
+  but it's why running two instances of `php consumer.php` at once would
+  cause messages to unpredictably split between them.
+
 ## Prerequisites
 
 - RabbitMQ running locally on `localhost:5672` with default `guest`/`guest`
