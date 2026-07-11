@@ -82,6 +82,16 @@ async function getOrder(req, res) {
   }
 }
 
+async function listOrders(req, res) {
+  try {
+    const [rows] = await pool.execute('SELECT * FROM orders ORDER BY created_at DESC LIMIT 20');
+    res.json(rows);
+  } catch (err) {
+    console.error('[node] error in listOrders:', err);
+    res.status(500).json({ error: 'internal error' });
+  }
+}
+
 async function main() {
   pool = mysql.createPool(DB_CONFIG);
 
@@ -92,6 +102,7 @@ async function main() {
   const app = express();
   app.use(express.json());
   app.post('/orders', createOrder);
+  app.get('/orders', listOrders);
   app.get('/orders/:id', getOrder);
 
   app.listen(3000, () => console.log('[node] order API listening on :3000'));
