@@ -19,22 +19,33 @@ $channel->queue_declare(OUT_QUEUE, false, false, false, false);
 echo "[php] waiting for messages...\n";
 
 $callback = function ($msg) use ($pdo, $channel) {
-    $message = json_decode($msg->body, true);
+    try {
+        $message = json_decode($msg->body, true, flags: JSON_THROW_ON_ERROR);
 
-    $stmt = $pdo->prepare(
-        "INSERT INTO shipments (order_id, status) VALUES (:order_id, 'created') " .
-        'ON DUPLICATE KEY UPDATE status = status'
-    );
-    $stmt->execute(['order_id' => $message['order_id']]);
+        $stmt = $pdo->prepare(
+            "INSERT INTO shipments (order_id, status) VALUES (:order_id, 'created') " .
+            'ON DUPLICATE KEY UPDATE status = status'
+        );
+        $stmt->execute(['order_id' => $message['order_id']]);
 
-    $message['event'] = 'shipment_created';
-    $message['created_at'] = gmdate('c');
+        // Only publish shipment_created if this was a genuine new insert (rowCount == 1)
+        // If rowCount == 0, it's a duplicate and the no-op update already deduped the row
+        if ($stmt->rowCount() != 0) {
+            $message['event'] = 'shipment_created';
+            $message['created_at'] = gmdate('c');
 
-    $channel->basic_publish(new AMQPMessage(json_encode($message)), '', OUT_QUEUE);
+            $channel->basic_publish(new AMQPMessage(json_encode($message)), '', OUT_QUEUE);
 
-    echo '[php] published shipment_created: ' . json_encode($message) . PHP_EOL;
+            echo '[php] published shipment_created: ' . json_encode($message) . PHP_EOL;
+        } else {
+            echo "[php] duplicate stock_reserved for order_id={$message['order_id']}, skipping republish\n";
+        }
 
-    $msg->delivery_info['channel']->basic_ack($msg->delivery_info['delivery_tag']);
+        $msg->delivery_info['channel']->basic_ack($msg->delivery_info['delivery_tag']);
+    } catch (Throwable $e) {
+        echo "[php] error handling message: " . $e->getMessage() . PHP_EOL;
+        $msg->delivery_info['channel']->basic_nack($msg->delivery_info['delivery_tag'], false, false);
+    }
 };
 
 $channel->basic_consume(IN_QUEUE, '', false, false, false, false, $callback);

@@ -2,10 +2,21 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A learning project: four single-file services — one per language (Node.js,
-Python, Go, PHP) — implement a **choreography saga** for placing an order.
-Each service owns its own MySQL schema; coordination happens only through
-RabbitMQ events, with compensating actions when payment or stock fails.
+A four-service order-processing pipeline. Each service is a different
+language, owns its own MySQL database, and does one job in the order
+lifecycle:
+
+| Service | Language | Purpose | Database |
+|---|---|---|---|
+| **Order Service** | Node.js | Exposes the HTTP API; creates orders and tracks final status | `orders_db` |
+| **Payment Service** | Python | Charges (or declines) the order; issues refunds on downstream failure | `payments_db` |
+| **Inventory Service** | Go | Reserves stock for the order, or reports it unavailable | `inventory_db` |
+| **Shipping Service** | PHP | Creates the shipment once payment and stock both succeed | `shipping_db` |
+
+No service reads or writes another service's database. Coordination is a
+**choreography saga**: there is no orchestrator — each service reacts to
+RabbitMQ events and publishes its own next event, with compensating actions
+(refund, cancel) when payment or stock fails.
 
 ```
 POST /orders (Node)                                                     saga ends:

@@ -56,22 +56,43 @@ func handleMessage(db *sql.DB, channel *amqp.Channel, message Message) error {
 	}
 
 	if available < message.Quantity {
-		if _, err := db.Exec(
+		result, err := db.Exec(
 			"INSERT INTO reservations (order_id, product_id, quantity, status) VALUES (?, ?, ?, 'released') "+
 				"ON DUPLICATE KEY UPDATE status = status",
 			message.OrderID, message.ProductID, message.Quantity,
-		); err != nil {
+		)
+		if err != nil {
 			return err
 		}
+
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			log.Printf("[go] duplicate payment_completed for order_id=%d, skipping republish", message.OrderID)
+			return nil
+		}
+
 		return publish(channel, unavailableQueue, "stock_unavailable", message)
 	}
 
-	if _, err := db.Exec(
+	result, err := db.Exec(
 		"INSERT INTO reservations (order_id, product_id, quantity, status) VALUES (?, ?, ?, 'reserved') "+
 			"ON DUPLICATE KEY UPDATE status = status",
 		message.OrderID, message.ProductID, message.Quantity,
-	); err != nil {
+	)
+	if err != nil {
 		return err
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		log.Printf("[go] duplicate payment_completed for order_id=%d, skipping republish", message.OrderID)
+		return nil
 	}
 
 	if _, err := db.Exec(

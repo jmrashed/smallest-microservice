@@ -28,45 +28,62 @@ def publish(channel, queue, event, payload):
 
 
 def handle_order_created(channel, method, body):
-    message = json.loads(body)
-    order_id = message["order_id"]
-    amount = message["amount"]
-    status = "declined" if amount > DECLINE_THRESHOLD else "completed"
-
-    db = pymysql.connect(**DB_CONFIG)
     try:
-        with db.cursor() as cursor:
-            cursor.execute(
-                "INSERT INTO payments (order_id, amount, status) VALUES (%s, %s, %s) "
-                "ON DUPLICATE KEY UPDATE status = status",
-                (order_id, amount, status),
-            )
-        db.commit()
-    finally:
-        db.close()
+        message = json.loads(body)
+        order_id = message["order_id"]
+        amount = message["amount"]
+        status = "declined" if amount > DECLINE_THRESHOLD else "completed"
 
-    if status == "completed":
-        publish(channel, Q_PAYMENT_COMPLETED, "payment_completed", message)
+        db = pymysql.connect(**DB_CONFIG)
+        try:
+            with db.cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO payments (order_id, amount, status) VALUES (%s, %s, %s) "
+                    "ON DUPLICATE KEY UPDATE status = status",
+                    (order_id, amount, status),
+                )
+                rows_affected = cursor.rowcount
+            db.commit()
+        finally:
+            db.close()
+
+        if rows_affected == 0:
+            print(f"[python] duplicate order_created for order_id={order_id}, skipping republish")
+        else:
+            if status == "completed":
+                publish(channel, Q_PAYMENT_COMPLETED, "payment_completed", message)
+            else:
+                publish(channel, Q_PAYMENT_FAILED, "payment_failed", message)
+    except Exception as err:
+        print(f"[python] error handling message: {err}", file=sys.stderr)
+        channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
     else:
-        publish(channel, Q_PAYMENT_FAILED, "payment_failed", message)
-
-    channel.basic_ack(delivery_tag=method.delivery_tag)
+        channel.basic_ack(delivery_tag=method.delivery_tag)
 
 
 def handle_stock_unavailable(channel, method, body):
-    message = json.loads(body)
-    order_id = message["order_id"]
-
-    db = pymysql.connect(**DB_CONFIG)
     try:
-        with db.cursor() as cursor:
-            cursor.execute("UPDATE payments SET status = 'refunded' WHERE order_id = %s", (order_id,))
-        db.commit()
-    finally:
-        db.close()
+        message = json.loads(body)
+        order_id = message["order_id"]
 
-    publish(channel, Q_PAYMENT_REFUNDED, "payment_refunded", message)
-    channel.basic_ack(delivery_tag=method.delivery_tag)
+        db = pymysql.connect(**DB_CONFIG)
+        try:
+            with db.cursor() as cursor:
+                cursor.execute("UPDATE payments SET status = 'refunded' WHERE order_id = %s", (order_id,))
+                rows_affected = cursor.rowcount
+            db.commit()
+        finally:
+            db.close()
+
+        if rows_affected == 0:
+            print(f"[python] duplicate stock_unavailable for order_id={order_id}, skipping republish")
+        else:
+            publish(channel, Q_PAYMENT_REFUNDED, "payment_refunded", message)
+    except Exception as err:
+        print(f"[python] error handling message: {err}", file=sys.stderr)
+        channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+    else:
+        channel.basic_ack(delivery_tag=method.delivery_tag)
 
 
 def main():
