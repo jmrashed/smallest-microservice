@@ -61,7 +61,7 @@ func publishAudit(channel *amqp.Channel, sourceService string, event string, ord
 		Event:         event,
 		Queue:         queue,
 		SourceService: sourceService,
-		OccurredAt:    time.Now().UTC().Format(time.RFC3339),
+		OccurredAt:    time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
 	}
 
 	if _, err := channel.QueueDeclare(sagaEventsQueue, false, false, false, false, nil); err != nil {
