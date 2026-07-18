@@ -1,7 +1,13 @@
 import type { Order } from '../lib/api'
-import { OrderStatusBadge } from './OrderStatusBadge'
+import { OrderRow } from './OrderRow'
 
-export function OrdersTable({ orders }: { orders: Order[] }) {
+interface OrdersTableProps {
+  orders: Order[]
+  expandedOrderId: number | null
+  onToggleExpand: (orderId: number) => void
+}
+
+export function OrdersTable({ orders, expandedOrderId, onToggleExpand }: OrdersTableProps) {
   if (orders.length === 0) {
     return <p className="text-sm text-gray-500">No orders yet — place one above.</p>
   }
@@ -20,16 +26,12 @@ export function OrdersTable({ orders }: { orders: Order[] }) {
       </thead>
       <tbody>
         {orders.map((order) => (
-          <tr key={order.id} className="border-b border-gray-100">
-            <td className="py-2 pr-4 font-mono text-gray-700">#{order.id}</td>
-            <td className="py-2 pr-4">{order.product_id}</td>
-            <td className="py-2 pr-4">{order.quantity}</td>
-            <td className="py-2 pr-4">${order.amount}</td>
-            <td className="py-2 pr-4">
-              <OrderStatusBadge status={order.status} />
-            </td>
-            <td className="py-2 text-gray-500">{new Date(order.created_at).toLocaleTimeString()}</td>
-          </tr>
+          <OrderRow
+            key={order.id}
+            order={order}
+            expanded={expandedOrderId === order.id}
+            onToggle={() => onToggleExpand(order.id)}
+          />
         ))}
       </tbody>
     </table>

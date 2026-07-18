@@ -9,6 +9,17 @@ const Q_ORDER_CREATED = 'q.order_created';
 const Q_PAYMENT_FAILED = 'q.payment_failed';
 const Q_PAYMENT_REFUNDED = 'q.payment_refunded';
 const Q_SHIPMENT_CREATED = 'q.shipment_created';
+const Q_SAGA_EVENTS = 'q.saga_events';
+
+const QUEUE_DEST_SERVICE = {
+  'q.order_created': 'python',
+  'q.payment_completed': 'go',
+  'q.payment_failed': 'node',
+  'q.stock_reserved': 'php',
+  'q.stock_unavailable': 'python',
+  'q.shipment_created': 'node',
+  'q.payment_refunded': 'node',
+};
 
 let channel;
 let pool;
@@ -18,6 +29,19 @@ async function publishEvent(queue, event, payload) {
   await channel.assertQueue(queue, { durable: false });
   channel.sendToQueue(queue, Buffer.from(JSON.stringify(message)));
   console.log(`[node] published ${event}:`, message);
+}
+
+async function publishAudit(sourceService, event, orderId, queue) {
+  const message = {
+    order_id: orderId,
+    event,
+    queue,
+    source_service: sourceService,
+    occurred_at: new Date().toISOString(),
+  };
+  await channel.assertQueue(Q_SAGA_EVENTS, { durable: false });
+  channel.sendToQueue(Q_SAGA_EVENTS, Buffer.from(JSON.stringify(message)));
+  console.log(`[node] audit published ${event} (${sourceService} -> ${QUEUE_DEST_SERVICE[queue]}):`, message);
 }
 
 async function updateOrderStatus(orderId, status) {
@@ -47,6 +71,24 @@ async function consumeTerminalEvents() {
   }
 }
 
+async function consumeSagaEvents() {
+  await channel.assertQueue(Q_SAGA_EVENTS, { durable: false });
+  channel.consume(Q_SAGA_EVENTS, async (msg) => {
+    try {
+      const message = JSON.parse(msg.content.toString());
+      const destService = QUEUE_DEST_SERVICE[message.queue] || 'unknown';
+      await pool.execute(
+        'INSERT INTO saga_events (order_id, source_service, dest_service, event, queue_name, occurred_at) VALUES (?, ?, ?, ?, ?, ?)',
+        [message.order_id, message.source_service, destService, message.event, message.queue, new Date(message.occurred_at)]
+      );
+      channel.ack(msg);
+    } catch (err) {
+      console.error('[node] error handling saga event:', err);
+      channel.nack(msg, false, false);
+    }
+  });
+}
+
 async function createOrder(req, res) {
   try {
     const { product_id, quantity, amount } = req.body;
@@ -61,6 +103,7 @@ async function createOrder(req, res) {
     const orderId = result.insertId;
 
     await publishEvent(Q_ORDER_CREATED, 'order_created', { order_id: orderId, product_id, quantity, amount });
+    await publishAudit('node', 'order_created', orderId, Q_ORDER_CREATED);
 
     res.status(201).json({ order_id: orderId, status: 'pending' });
   } catch (err) {
@@ -92,18 +135,33 @@ async function listOrders(req, res) {
   }
 }
 
+async function getOrderEvents(req, res) {
+  try {
+    const [rows] = await pool.execute(
+      'SELECT * FROM saga_events WHERE order_id = ? ORDER BY occurred_at ASC, id ASC',
+      [req.params.id]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('[node] error in getOrderEvents:', err);
+    res.status(500).json({ error: 'internal error' });
+  }
+}
+
 async function main() {
   pool = mysql.createPool(DB_CONFIG);
 
   const conn = await amqp.connect(AMQP_URL);
   channel = await conn.createChannel();
   await consumeTerminalEvents();
+  await consumeSagaEvents();
 
   const app = express();
   app.use(express.json());
   app.post('/orders', createOrder);
   app.get('/orders', listOrders);
   app.get('/orders/:id', getOrder);
+  app.get('/orders/:id/events', getOrderEvents);
 
   app.listen(3000, () => console.log('[node] order API listening on :3000'));
 }

@@ -3,7 +3,7 @@ import { OrdersTable } from './components/OrdersTable'
 import { useOrders } from './hooks/useOrders'
 
 function App() {
-  const { orders, placeOrder, placeError, connectionLost } = useOrders()
+  const { orders, placeOrder, placeError, connectionLost, expandedOrderId, toggleExpand } = useOrders()
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-10">
@@ -24,7 +24,7 @@ function App() {
 
       <section className="mt-8">
         <h2 className="mb-3 text-sm font-medium text-gray-600">Recent Orders</h2>
-        <OrdersTable orders={orders} />
+        <OrdersTable orders={orders} expandedOrderId={expandedOrderId} onToggleExpand={toggleExpand} />
       </section>
     </div>
   )

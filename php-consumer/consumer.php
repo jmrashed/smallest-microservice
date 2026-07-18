@@ -7,6 +7,7 @@ use PhpAmqpLib\Message\AMQPMessage;
 
 const IN_QUEUE = 'q.stock_reserved';
 const OUT_QUEUE = 'q.shipment_created';
+const SAGA_EVENTS_QUEUE = 'q.saga_events';
 
 $pdo = new PDO('mysql:host=localhost;dbname=shipping_db', 'root', '');
 $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
@@ -15,6 +16,24 @@ $connection = new AMQPStreamConnection('localhost', 5672, 'guest', 'guest', '/',
 $channel = $connection->channel();
 $channel->queue_declare(IN_QUEUE, false, false, false, false);
 $channel->queue_declare(OUT_QUEUE, false, false, false, false);
+$channel->queue_declare(SAGA_EVENTS_QUEUE, false, false, false, false);
+
+function occurred_at_now() {
+    $now = \DateTime::createFromFormat('U.u', sprintf('%.6F', microtime(true)));
+    $now->setTimezone(new \DateTimeZone('UTC'));
+    return $now->format('Y-m-d\TH:i:s.v\Z');
+}
+
+function publish_audit($channel, $sourceService, $event, $orderId, $queue) {
+    $audit = [
+        'order_id' => $orderId,
+        'event' => $event,
+        'queue' => $queue,
+        'source_service' => $sourceService,
+        'occurred_at' => occurred_at_now(),
+    ];
+    $channel->basic_publish(new AMQPMessage(json_encode($audit)), '', SAGA_EVENTS_QUEUE);
+}
 
 echo "[php] waiting for messages...\n";
 
@@ -37,6 +56,8 @@ $callback = function ($msg) use ($pdo, $channel) {
             $channel->basic_publish(new AMQPMessage(json_encode($message)), '', OUT_QUEUE);
 
             echo '[php] published shipment_created: ' . json_encode($message) . PHP_EOL;
+
+            publish_audit($channel, 'php', 'shipment_created', $message['order_id'], OUT_QUEUE);
         } else {
             echo "[php] duplicate stock_reserved for order_id={$message['order_id']}, skipping republish\n";
         }

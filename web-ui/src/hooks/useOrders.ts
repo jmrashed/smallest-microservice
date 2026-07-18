@@ -8,6 +8,7 @@ export function useOrders() {
   const [orders, setOrders] = useState<Order[]>([])
   const [placeError, setPlaceError] = useState<string | null>(null)
   const [connectionLost, setConnectionLost] = useState(false)
+  const [expandedOrderId, setExpandedOrderId] = useState<number | null>(null)
   const consecutiveFailures = useRef(0)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -61,6 +62,10 @@ export function useOrders() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  const toggleExpand = useCallback((orderId: number) => {
+    setExpandedOrderId((prev) => (prev === orderId ? null : orderId))
+  }, [])
+
   const placeOrder = useCallback(
     async (input: PlaceOrderInput) => {
       setPlaceError(null)
@@ -78,6 +83,7 @@ export function useOrders() {
           },
           ...prev,
         ])
+        setExpandedOrderId(order_id)
         startPolling()
       } catch (err) {
         setPlaceError(err instanceof Error ? err.message : 'failed to place order')
@@ -86,5 +92,5 @@ export function useOrders() {
     [startPolling],
   )
 
-  return { orders, placeOrder, placeError, connectionLost }
+  return { orders, placeOrder, placeError, connectionLost, expandedOrderId, toggleExpand }
 }
