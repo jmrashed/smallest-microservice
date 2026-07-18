@@ -41,3 +41,19 @@ export async function listOrders(): Promise<Order[]> {
   const res = await fetch('/api/orders')
   return parseJsonOrThrow(res)
 }
+
+export interface SagaEvent {
+  id: number
+  order_id: number
+  source_service: string
+  dest_service: string
+  event: string
+  queue_name: string
+  occurred_at: string
+  recorded_at: string
+}
+
+export async function getOrderEvents(orderId: number): Promise<SagaEvent[]> {
+  const res = await fetch(`/api/orders/${orderId}/events`)
+  return parseJsonOrThrow(res)
+}
