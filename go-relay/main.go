@@ -14,6 +14,7 @@ const (
 	inQueue          = "q.payment_completed"
 	reservedQueue    = "q.stock_reserved"
 	unavailableQueue = "q.stock_unavailable"
+	sagaEventsQueue  = "q.saga_events"
 	dsn              = "root:@tcp(localhost:3306)/inventory_db"
 )
 
@@ -24,6 +25,14 @@ type Message struct {
 	Amount    float64 `json:"amount"`
 	Event     string  `json:"event"`
 	CreatedAt string  `json:"created_at"`
+}
+
+type AuditMessage struct {
+	OrderID       int    `json:"order_id"`
+	Event         string `json:"event"`
+	Queue         string `json:"queue"`
+	SourceService string `json:"source_service"`
+	OccurredAt    string `json:"occurred_at"`
 }
 
 func publish(channel *amqp.Channel, queue string, event string, message Message) error {
@@ -41,6 +50,30 @@ func publish(channel *amqp.Channel, queue string, event string, message Message)
 
 	log.Printf("[go] published %s: %s", event, body)
 	return channel.Publish("", queue, false, false, amqp.Publishing{
+		ContentType: "application/json",
+		Body:        body,
+	})
+}
+
+func publishAudit(channel *amqp.Channel, sourceService string, event string, orderID int, queue string) error {
+	audit := AuditMessage{
+		OrderID:       orderID,
+		Event:         event,
+		Queue:         queue,
+		SourceService: sourceService,
+		OccurredAt:    time.Now().UTC().Format(time.RFC3339),
+	}
+
+	if _, err := channel.QueueDeclare(sagaEventsQueue, false, false, false, false, nil); err != nil {
+		return err
+	}
+
+	body, err := json.Marshal(audit)
+	if err != nil {
+		return err
+	}
+
+	return channel.Publish("", sagaEventsQueue, false, false, amqp.Publishing{
 		ContentType: "application/json",
 		Body:        body,
 	})
@@ -74,7 +107,10 @@ func handleMessage(db *sql.DB, channel *amqp.Channel, message Message) error {
 			return nil
 		}
 
-		return publish(channel, unavailableQueue, "stock_unavailable", message)
+		if err := publish(channel, unavailableQueue, "stock_unavailable", message); err != nil {
+			return err
+		}
+		return publishAudit(channel, "go", "stock_unavailable", message.OrderID, unavailableQueue)
 	}
 
 	result, err := db.Exec(
@@ -102,7 +138,10 @@ func handleMessage(db *sql.DB, channel *amqp.Channel, message Message) error {
 		return err
 	}
 
-	return publish(channel, reservedQueue, "stock_reserved", message)
+	if err := publish(channel, reservedQueue, "stock_reserved", message); err != nil {
+		return err
+	}
+	return publishAudit(channel, "go", "stock_reserved", message.OrderID, reservedQueue)
 }
 
 func main() {
