@@ -137,7 +137,10 @@ async function listOrders(req, res) {
 
 async function getOrderEvents(req, res) {
   try {
-    const [rows] = await pool.execute('SELECT * FROM saga_events WHERE order_id = ? ORDER BY id ASC', [req.params.id]);
+    const [rows] = await pool.execute(
+      'SELECT * FROM saga_events WHERE order_id = ? ORDER BY occurred_at ASC, id ASC',
+      [req.params.id]
+    );
     res.json(rows);
   } catch (err) {
     console.error('[node] error in getOrderEvents:', err);

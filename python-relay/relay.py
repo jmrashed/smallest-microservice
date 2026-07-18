@@ -12,6 +12,7 @@ Q_STOCK_UNAVAILABLE = "q.stock_unavailable"
 Q_PAYMENT_COMPLETED = "q.payment_completed"
 Q_PAYMENT_FAILED = "q.payment_failed"
 Q_PAYMENT_REFUNDED = "q.payment_refunded"
+Q_SAGA_EVENTS = "q.saga_events"
 
 DECLINE_THRESHOLD = 1000
 
@@ -25,6 +26,19 @@ def publish(channel, queue, event, payload):
     channel.queue_declare(queue=queue, durable=False)
     channel.basic_publish(exchange="", routing_key=queue, body=json.dumps(message))
     print(f"[python] published {event}: {message}")
+
+
+def publish_audit(channel, source_service, event, order_id, queue):
+    message = {
+        "order_id": order_id,
+        "event": event,
+        "queue": queue,
+        "source_service": source_service,
+        "occurred_at": now(),
+    }
+    channel.queue_declare(queue=Q_SAGA_EVENTS, durable=False)
+    channel.basic_publish(exchange="", routing_key=Q_SAGA_EVENTS, body=json.dumps(message))
+    print(f"[python] audit published {event}: {message}")
 
 
 def handle_order_created(channel, method, body):
@@ -52,8 +66,10 @@ def handle_order_created(channel, method, body):
         else:
             if status == "completed":
                 publish(channel, Q_PAYMENT_COMPLETED, "payment_completed", message)
+                publish_audit(channel, "python", "payment_completed", order_id, Q_PAYMENT_COMPLETED)
             else:
                 publish(channel, Q_PAYMENT_FAILED, "payment_failed", message)
+                publish_audit(channel, "python", "payment_failed", order_id, Q_PAYMENT_FAILED)
     except Exception as err:
         print(f"[python] error handling message: {err}", file=sys.stderr)
         channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
@@ -79,6 +95,7 @@ def handle_stock_unavailable(channel, method, body):
             print(f"[python] duplicate stock_unavailable for order_id={order_id}, skipping republish")
         else:
             publish(channel, Q_PAYMENT_REFUNDED, "payment_refunded", message)
+            publish_audit(channel, "python", "payment_refunded", order_id, Q_PAYMENT_REFUNDED)
     except Exception as err:
         print(f"[python] error handling message: {err}", file=sys.stderr)
         channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
