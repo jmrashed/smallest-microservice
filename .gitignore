@@ -1,5 +1,11 @@
 node_modules/
 vendor/
 venv/
+.venv/
+__pycache__/
+.env
+.env.*
+go-relay/go-relay
+*.exe
 *.log
 docs/
