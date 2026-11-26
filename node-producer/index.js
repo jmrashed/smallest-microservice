@@ -26,8 +26,8 @@ let pool;
 
 async function publishEvent(queue, event, payload) {
   const message = { ...payload, event, created_at: new Date().toISOString() };
-  await channel.assertQueue(queue, { durable: false });
-  channel.sendToQueue(queue, Buffer.from(JSON.stringify(message)));
+  await channel.assertQueue(queue, { durable: true });
+  channel.sendToQueue(queue, Buffer.from(JSON.stringify(message)), { persistent: true });
   console.log(`[node] published ${event}:`, message);
 }
 
@@ -39,8 +39,8 @@ async function publishAudit(sourceService, event, orderId, queue) {
     source_service: sourceService,
     occurred_at: new Date().toISOString(),
   };
-  await channel.assertQueue(Q_SAGA_EVENTS, { durable: false });
-  channel.sendToQueue(Q_SAGA_EVENTS, Buffer.from(JSON.stringify(message)));
+  await channel.assertQueue(Q_SAGA_EVENTS, { durable: true });
+  channel.sendToQueue(Q_SAGA_EVENTS, Buffer.from(JSON.stringify(message)), { persistent: true });
   console.log(`[node] audit published ${event} (${sourceService} -> ${QUEUE_DEST_SERVICE[queue]}):`, message);
 }
 
@@ -57,7 +57,7 @@ async function consumeTerminalEvents() {
   ];
 
   for (const [queue, status] of queues) {
-    await channel.assertQueue(queue, { durable: false });
+    await channel.assertQueue(queue, { durable: true });
     channel.consume(queue, async (msg) => {
       try {
         const message = JSON.parse(msg.content.toString());
@@ -72,7 +72,7 @@ async function consumeTerminalEvents() {
 }
 
 async function consumeSagaEvents() {
-  await channel.assertQueue(Q_SAGA_EVENTS, { durable: false });
+  await channel.assertQueue(Q_SAGA_EVENTS, { durable: true });
   channel.consume(Q_SAGA_EVENTS, async (msg) => {
     try {
       const message = JSON.parse(msg.content.toString());
@@ -92,8 +92,16 @@ async function consumeSagaEvents() {
 async function createOrder(req, res) {
   try {
     const { product_id, quantity, amount } = req.body;
-    if (!product_id || !quantity || !amount) {
-      return res.status(400).json({ error: 'product_id, quantity, and amount are required' });
+    // Reject bad input here: downstream services expect these exact types, and a message
+    // they cannot process is dropped, which leaves the order stuck in "pending".
+    if (typeof product_id !== 'string' || product_id.length < 1 || product_id.length > 50) {
+      return res.status(400).json({ error: 'product_id must be a string of 1 to 50 characters' });
+    }
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 2147483647) {
+      return res.status(400).json({ error: 'quantity must be a positive integer' });
+    }
+    if (typeof amount !== 'number' || !(amount >= 0.01 && amount <= 99999999.99)) {
+      return res.status(400).json({ error: 'amount must be a number from 0.01 to 99999999.99' });
     }
 
     const [result] = await pool.execute(

@@ -39,7 +39,7 @@ func publish(channel *amqp.Channel, queue string, event string, message Message)
 	message.Event = event
 	message.CreatedAt = time.Now().UTC().Format(time.RFC3339)
 
-	if _, err := channel.QueueDeclare(queue, false, false, false, false, nil); err != nil {
+	if _, err := channel.QueueDeclare(queue, true, false, false, false, nil); err != nil {
 		return err
 	}
 
@@ -50,8 +50,9 @@ func publish(channel *amqp.Channel, queue string, event string, message Message)
 
 	log.Printf("[go] published %s: %s", event, body)
 	return channel.Publish("", queue, false, false, amqp.Publishing{
-		ContentType: "application/json",
-		Body:        body,
+		ContentType:  "application/json",
+		DeliveryMode: amqp.Persistent,
+		Body:         body,
 	})
 }
 
@@ -64,7 +65,7 @@ func publishAudit(channel *amqp.Channel, sourceService string, event string, ord
 		OccurredAt:    time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
 	}
 
-	if _, err := channel.QueueDeclare(sagaEventsQueue, false, false, false, false, nil); err != nil {
+	if _, err := channel.QueueDeclare(sagaEventsQueue, true, false, false, false, nil); err != nil {
 		return err
 	}
 
@@ -74,74 +75,83 @@ func publishAudit(channel *amqp.Channel, sourceService string, event string, ord
 	}
 
 	return channel.Publish("", sagaEventsQueue, false, false, amqp.Publishing{
-		ContentType: "application/json",
-		Body:        body,
+		ContentType:  "application/json",
+		DeliveryMode: amqp.Persistent,
+		Body:         body,
 	})
 }
 
-func handleMessage(db *sql.DB, channel *amqp.Channel, message Message) error {
+// reserveStock records the reservation and decrements stock in one transaction, so a crash
+// or DB error cannot leave one without the other. The row lock prevents overselling.
+// isNew is false when this order was already processed (redelivered message).
+func reserveStock(db *sql.DB, message Message) (status string, isNew bool, err error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return "", false, err
+	}
+	defer tx.Rollback() // no-op after Commit
+
 	var available int
-	err := db.QueryRow("SELECT available_quantity FROM stock WHERE product_id = ?", message.ProductID).Scan(&available)
+	err = tx.QueryRow("SELECT available_quantity FROM stock WHERE product_id = ? FOR UPDATE", message.ProductID).Scan(&available)
 	if err == sql.ErrNoRows {
 		available = 0
 	} else if err != nil {
-		return err
+		return "", false, err
 	}
 
+	status = "reserved"
 	if available < message.Quantity {
-		result, err := db.Exec(
-			"INSERT INTO reservations (order_id, product_id, quantity, status) VALUES (?, ?, ?, 'released') "+
-				"ON DUPLICATE KEY UPDATE status = status",
-			message.OrderID, message.ProductID, message.Quantity,
-		)
-		if err != nil {
-			return err
-		}
-
-		affected, err := result.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if affected == 0 {
-			log.Printf("[go] duplicate payment_completed for order_id=%d, skipping republish", message.OrderID)
-			return nil
-		}
-
-		if err := publish(channel, unavailableQueue, "stock_unavailable", message); err != nil {
-			return err
-		}
-		return publishAudit(channel, "go", "stock_unavailable", message.OrderID, unavailableQueue)
+		status = "released"
 	}
 
-	result, err := db.Exec(
-		"INSERT INTO reservations (order_id, product_id, quantity, status) VALUES (?, ?, ?, 'reserved') "+
+	result, err := tx.Exec(
+		"INSERT INTO reservations (order_id, product_id, quantity, status) VALUES (?, ?, ?, ?) "+
 			"ON DUPLICATE KEY UPDATE status = status",
-		message.OrderID, message.ProductID, message.Quantity,
+		message.OrderID, message.ProductID, message.Quantity, status,
 	)
 	if err != nil {
-		return err
+		return "", false, err
 	}
 
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return err
+		return "", false, err
 	}
 	if affected == 0 {
+		return status, false, nil
+	}
+
+	if status == "reserved" {
+		if _, err := tx.Exec(
+			"UPDATE stock SET available_quantity = available_quantity - ? WHERE product_id = ?",
+			message.Quantity, message.ProductID,
+		); err != nil {
+			return "", false, err
+		}
+	}
+
+	return status, true, tx.Commit()
+}
+
+func handleMessage(db *sql.DB, channel *amqp.Channel, message Message) error {
+	status, isNew, err := reserveStock(db, message)
+	if err != nil {
+		return err
+	}
+	if !isNew {
 		log.Printf("[go] duplicate payment_completed for order_id=%d, skipping republish", message.OrderID)
 		return nil
 	}
 
-	if _, err := db.Exec(
-		"UPDATE stock SET available_quantity = available_quantity - ? WHERE product_id = ?",
-		message.Quantity, message.ProductID,
-	); err != nil {
-		return err
+	queue, event := reservedQueue, "stock_reserved"
+	if status == "released" {
+		queue, event = unavailableQueue, "stock_unavailable"
 	}
 
-	if err := publish(channel, reservedQueue, "stock_reserved", message); err != nil {
+	if err := publish(channel, queue, event, message); err != nil {
 		return err
 	}
-	return publishAudit(channel, "go", "stock_reserved", message.OrderID, reservedQueue)
+	return publishAudit(channel, "go", event, message.OrderID, queue)
 }
 
 func main() {
@@ -163,7 +173,7 @@ func main() {
 	}
 	defer channel.Close()
 
-	if _, err := channel.QueueDeclare(inQueue, false, false, false, false, nil); err != nil {
+	if _, err := channel.QueueDeclare(inQueue, true, false, false, false, nil); err != nil {
 		log.Fatalf("[go] declare in queue error: %v", err)
 	}
 

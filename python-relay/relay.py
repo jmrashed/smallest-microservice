@@ -15,6 +15,7 @@ Q_PAYMENT_REFUNDED = "q.payment_refunded"
 Q_SAGA_EVENTS = "q.saga_events"
 
 DECLINE_THRESHOLD = 1000
+PERSISTENT = pika.BasicProperties(delivery_mode=pika.DeliveryMode.Persistent)
 
 
 def now():
@@ -23,8 +24,8 @@ def now():
 
 def publish(channel, queue, event, payload):
     message = {**payload, "event": event, "created_at": now()}
-    channel.queue_declare(queue=queue, durable=False)
-    channel.basic_publish(exchange="", routing_key=queue, body=json.dumps(message))
+    channel.queue_declare(queue=queue, durable=True)
+    channel.basic_publish(exchange="", routing_key=queue, body=json.dumps(message), properties=PERSISTENT)
     print(f"[python] published {event}: {message}")
 
 
@@ -36,8 +37,8 @@ def publish_audit(channel, source_service, event, order_id, queue):
         "source_service": source_service,
         "occurred_at": now(),
     }
-    channel.queue_declare(queue=Q_SAGA_EVENTS, durable=False)
-    channel.basic_publish(exchange="", routing_key=Q_SAGA_EVENTS, body=json.dumps(message))
+    channel.queue_declare(queue=Q_SAGA_EVENTS, durable=True)
+    channel.basic_publish(exchange="", routing_key=Q_SAGA_EVENTS, body=json.dumps(message), properties=PERSISTENT)
     print(f"[python] audit published {event}: {message}")
 
 
@@ -107,8 +108,8 @@ def main():
     connection = pika.BlockingConnection(pika.ConnectionParameters("localhost"))
     channel = connection.channel()
 
-    channel.queue_declare(queue=Q_ORDER_CREATED, durable=False)
-    channel.queue_declare(queue=Q_STOCK_UNAVAILABLE, durable=False)
+    channel.queue_declare(queue=Q_ORDER_CREATED, durable=True)
+    channel.queue_declare(queue=Q_STOCK_UNAVAILABLE, durable=True)
 
     channel.basic_consume(
         queue=Q_ORDER_CREATED,

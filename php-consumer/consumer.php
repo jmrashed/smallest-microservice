@@ -9,14 +9,17 @@ const IN_QUEUE = 'q.stock_reserved';
 const OUT_QUEUE = 'q.shipment_created';
 const SAGA_EVENTS_QUEUE = 'q.saga_events';
 
-$pdo = new PDO('mysql:host=localhost;dbname=shipping_db', 'root', '');
+// 127.0.0.1, not localhost: PDO treats "localhost" as a Unix socket on Linux/macOS.
+$pdo = new PDO('mysql:host=127.0.0.1;dbname=shipping_db', 'root', '');
 $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
 $connection = new AMQPStreamConnection('localhost', 5672, 'guest', 'guest', '/', false, 'AMQPLAIN', null, 'en_US', 3, 3600);
 $channel = $connection->channel();
-$channel->queue_declare(IN_QUEUE, false, false, false, false);
-$channel->queue_declare(OUT_QUEUE, false, false, false, false);
-$channel->queue_declare(SAGA_EVENTS_QUEUE, false, false, false, false);
+$channel->queue_declare(IN_QUEUE, false, true, false, false);
+$channel->queue_declare(OUT_QUEUE, false, true, false, false);
+$channel->queue_declare(SAGA_EVENTS_QUEUE, false, true, false, false);
+
+const PERSISTENT = ['delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT];
 
 function occurred_at_now() {
     $now = \DateTime::createFromFormat('U.u', sprintf('%.6F', microtime(true)));
@@ -32,7 +35,7 @@ function publish_audit($channel, $sourceService, $event, $orderId, $queue) {
         'source_service' => $sourceService,
         'occurred_at' => occurred_at_now(),
     ];
-    $channel->basic_publish(new AMQPMessage(json_encode($audit)), '', SAGA_EVENTS_QUEUE);
+    $channel->basic_publish(new AMQPMessage(json_encode($audit), PERSISTENT), '', SAGA_EVENTS_QUEUE);
 }
 
 echo "[php] waiting for messages...\n";
@@ -53,7 +56,7 @@ $callback = function ($msg) use ($pdo, $channel) {
             $message['event'] = 'shipment_created';
             $message['created_at'] = gmdate('c');
 
-            $channel->basic_publish(new AMQPMessage(json_encode($message)), '', OUT_QUEUE);
+            $channel->basic_publish(new AMQPMessage(json_encode($message), PERSISTENT), '', OUT_QUEUE);
 
             echo '[php] published shipment_created: ' . json_encode($message) . PHP_EOL;
 
@@ -62,10 +65,10 @@ $callback = function ($msg) use ($pdo, $channel) {
             echo "[php] duplicate stock_reserved for order_id={$message['order_id']}, skipping republish\n";
         }
 
-        $msg->delivery_info['channel']->basic_ack($msg->delivery_info['delivery_tag']);
+        $msg->ack();
     } catch (Throwable $e) {
         echo "[php] error handling message: " . $e->getMessage() . PHP_EOL;
-        $msg->delivery_info['channel']->basic_nack($msg->delivery_info['delivery_tag'], false, false);
+        $msg->nack(false);
     }
 };
 
